@@ -21,6 +21,9 @@ interface GameCanvasProps {
 const MAP_W = 60;
 const MAP_H = 60;
 
+// Background pattern scale (lower = bigger pattern)
+const BG_REPEAT_SCALE = 0.65;
+
 enum TileType {
   GRASS = 0,
   DIRT = 1,
@@ -220,7 +223,7 @@ const generateMapData = (width: number, height: number): TileType[][] => {
 };
 
 // --- NATURAL SPRITE GENERATION ---
-const createTileTexture = (type: TileType): HTMLCanvasElement => {
+const createTileTexture = (type: TileType, groundImg?: HTMLImageElement | null): HTMLCanvasElement => {
     const size = TILE_SIZE * 2; 
     const canvas = document.createElement('canvas');
     canvas.width = size;
@@ -241,18 +244,52 @@ const createTileTexture = (type: TileType): HTMLCanvasElement => {
 
     switch(type) {
         case TileType.GRASS:
-            ctx.clip(); 
-            ctx.fillStyle = '#10b981'; 
-            for(let i=0; i<12; i++) {
-                const bx = (Math.random() - 0.5) * size;
-                const by = (Math.random() - 0.5) * size;
-                const h = 4 + Math.random() * 6;
-                ctx.fillRect(bx, by, 1.5, h);
+            ctx.clip();
+
+            // If a seamless ground tile image is provided, paint it as a repeating pattern (best for custom PNG ground).
+            if (groundImg && groundImg.complete && groundImg.naturalWidth > 0) {
+                const pattern = ctx.createPattern(groundImg, 'repeat');
+                if (pattern) {
+                    // Controls how large the pattern looks on each tile.
+                    // Lower = bigger stones/grass, Higher = more repetition (smaller details)
+                    const REPEAT_SCALE = 0.65;
+
+                    ctx.save();
+                    ctx.scale(REPEAT_SCALE, REPEAT_SCALE);
+                    ctx.fillStyle = pattern;
+                    ctx.fillRect(
+                        -radius / REPEAT_SCALE,
+                        -radius / REPEAT_SCALE,
+                        (radius * 2) / REPEAT_SCALE,
+                        (radius * 2) / REPEAT_SCALE
+                    );
+                    ctx.restore();
+                } else {
+                    ctx.fillStyle = '#10b981';
+                    ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
+                }
+
+                // Soft lighting to keep characters/UI readable
+                const light = ctx.createRadialGradient(0, -radius * 0.4, radius * 0.2, 0, 0, radius);
+                light.addColorStop(0, 'rgba(255,255,255,0.08)');
+                light.addColorStop(1, 'rgba(0,0,0,0.20)');
+                ctx.fillStyle = light;
+                ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
+            } else {
+                // Fallback procedural grass
+                ctx.fillStyle = '#10b981';
+                for(let i=0; i<12; i++) {
+                    const bx = (Math.random() - 0.5) * size;
+                    const by = (Math.random() - 0.5) * size;
+                    const h = 4 + Math.random() * 6;
+                    ctx.fillRect(bx, by, 1.5, h);
+                }
+                ctx.fillStyle = '#047857';
+                for(let i=0; i<8; i++) {
+                    ctx.fillRect((Math.random()-0.5)*size, (Math.random()-0.5)*size, 2, 2);
+                }
             }
-            ctx.fillStyle = '#047857';
-            for(let i=0; i<8; i++) {
-                ctx.fillRect((Math.random()-0.5)*size, (Math.random()-0.5)*size, 2, 2);
-            }
+
             break;
 
         case TileType.DIRT:
@@ -329,6 +366,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const attackAnimRef = useRef(0);
   const hasDealtDamageRef = useRef(false);
+  const weaponEnhanceFlashRef = useRef(0);
+  const lastWeaponUpgradeLevelRef = useRef<number>(-1);
   const spinAnimRef = useRef(0); 
   const facingRef = useRef(Math.PI / 4);
   const lastFacingLeftRef = useRef(false);
@@ -348,10 +387,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const mapDataRef = useRef<TileType[][]>([]);
   const tileTexturesRef = useRef<Record<TileType, HTMLCanvasElement> | null>(null);
 
+  // Ground tile image (seamless PNG) for both tiles + full-canvas background
+  const groundImgRef = useRef<HTMLImageElement | null>(null);
+
   // Assets
   const avatarPhotoRef = useRef<HTMLImageElement | null>(null);
   const spritesRef = useRef<Record<string, HTMLImageElement>>({});
   const [spritesLoaded, setSpritesLoaded] = useState(false);
+
+  // Boss PNG assets (wave boss portraits)
+  const bossUndyingKingRef = useRef<HTMLImageElement | null>(null);
+  const bossPrimevalRexRef = useRef<HTMLImageElement | null>(null);
+  const bossInfernoDrakeRef = useRef<HTMLImageElement | null>(null);
   const blinkTimerRef = useRef(0);
   const nextBlinkRef = useRef(2000);
   
@@ -369,6 +416,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              [TileType.STONE]: createTileTexture(TileType.STONE),
              [TileType.SAND]: createTileTexture(TileType.SAND)
          };
+
+         // Optional: replace GRASS texture with your seamless PNG tile (public/assets/ground/grass_stone_tile.png).
+         // This keeps the game working even if the image is missing.
+		 /*
+         const BASE = (import.meta as any).env?.BASE_URL ?? '/';
+         const groundUrl = `${BASE}assets/ground/grass_stone_tile.png`;
+         const groundImg = new Image();
+         groundImg.src = groundUrl;
+         groundImg.onload = () => {
+           groundImgRef.current = groundImg;
+           const current = tileTexturesRef.current;
+           if (!current) return;
+           tileTexturesRef.current = {
+             ...current,
+             [TileType.GRASS]: createTileTexture(TileType.GRASS, groundImg),
+           };
+         };
+         groundImg.onerror = () => {
+           groundImgRef.current = null;
+         };
+		 */
      }
   }, []);
 
@@ -403,8 +471,46 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // --- Armor Set (PNG paper-doll) ---
+  const ARMOR_SETS = useMemo(() => ([
+    'Armor_001',
+    'Armor_002',
+  ]), []);
+
+  const [armorSet, setArmorSet] = useState<string>(ARMOR_SETS[0] ?? 'Armor_001');
+
+  // Trigger a short glow "flash" whenever the weapon upgrade level increases (enhancement applied).
+  useEffect(() => {
+    const weapon = equippedItems.find(i => i.type === ItemType.WEAPON);
+    const lvl = weapon?.upgradeLevel || 0;
+    if (lastWeaponUpgradeLevelRef.current >= 0 && lvl > lastWeaponUpgradeLevelRef.current) {
+      weaponEnhanceFlashRef.current = 0.45; // seconds
+    }
+    lastWeaponUpgradeLevelRef.current = lvl;
+  }, [equippedItems]);
+
+  // Load boss PNGs from public/assets/boss/
+  useEffect(() => {
+    const BASE = (import.meta as any).env?.BASE_URL ?? '/';
+
+    const loadBoss = (ref: React.MutableRefObject<HTMLImageElement | null>, path: string) => {
+      const img = new Image();
+      img.src = `${BASE}${path}`;
+      img.onload = () => { ref.current = img; };
+      img.onerror = () => { ref.current = null; };
+    };
+
+    loadBoss(bossUndyingKingRef, 'assets/boss/The_Undying_King_Boss_Monster_01.png');
+    loadBoss(bossPrimevalRexRef, 'assets/boss/Giant_Cat_Boss_Monster_01.png');
+    loadBoss(bossInfernoDrakeRef, 'assets/boss/Skeleton_King_Boss_Monster_with_giant_sword_01.png');
+  }, []);
+
+
+
   useEffect(() => {
     // Prefer PNG layered armor parts (paper-doll). Falls back to SVG parts if PNGs aren't available.
+    const BASE = (import.meta as any).env?.BASE_URL ?? '/';
+
     const loadPng = (key: string, url: string): Promise<[string, HTMLImageElement]> => {
       return new Promise((resolve) => {
         const img = new Image();
@@ -414,7 +520,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       });
     };
 
-    const pngBase = '/assets/hero/chibi-elf/parts';
+    const pngBase = `${BASE}assets/hero/chibi-elf/sets/${armorSet}/parts`;
+
+    const weaponFile = armorSet === 'Armor_002' ? 'Weapon_Swords_002.png' : 'Weapon_Swords_001.png';
+    const weaponPath = `${BASE}assets/hero/chibi-elf/weapons/${weaponFile}`;
+
     Promise.all([
       loadPng('legL', `${pngBase}/legL.png`),
       loadPng('legR', `${pngBase}/legR.png`),
@@ -423,11 +533,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       loadPng('body', `${pngBase}/body.png`),
       loadPng('head', `${pngBase}/head.png`),
       loadPng('cloak', `${pngBase}/cloak.png`),
+      loadPng('weapon', weaponPath),
     ]).then((results) => {
       const newSprites: Record<string, HTMLImageElement> = {};
       results.forEach(([key, img]) => (newSprites[key] = img));
 
-      // If the PNG body loaded successfully (has natural size), we treat this as PNG mode.
       const body = newSprites.body;
       if (body && body.naturalWidth > 0 && body.naturalHeight > 0) {
         spritesRef.current = newSprites;
@@ -435,12 +545,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         return;
       }
 
-      // --- Fallback to existing SVG-generated hero ---
+      // --- SVG fallback (original behavior) ---
       const colors = getArmorColors(armorName);
       const defs = getHeroDefs(colors);
       const parts = getHeroParts(armorName);
 
-      const loadSprite = (key: string, svgContent: string): Promise<[string, HTMLImageElement]> => {
+      const loadSvgSprite = (key: string, svgContent: string): Promise<[string, HTMLImageElement]> => {
         return new Promise((resolve) => {
           const img = new Image();
           const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" width="400" height="500">${defs}${svgContent}</svg>`;
@@ -451,11 +561,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       };
 
       Promise.all([
-        loadSprite('legL', parts.legL),
-        loadSprite('legR', parts.legR),
-        loadSprite('armL', parts.armL),
-        loadSprite('armR', parts.armR),
-        loadSprite('body', parts.body),
+        loadSvgSprite('legL', parts.legL),
+        loadSvgSprite('legR', parts.legR),
+        loadSvgSprite('armL', parts.armL),
+        loadSvgSprite('armR', parts.armR),
+        loadSvgSprite('body', parts.body),
       ]).then((svgResults) => {
         const svgSprites: Record<string, HTMLImageElement> = {};
         svgResults.forEach(([key, img]) => (svgSprites[key] = img));
@@ -463,7 +573,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         setSpritesLoaded(true);
       });
     });
-  }, [armorName]);
+  }, [armorSet, armorName, ARMOR_SETS]);
+
 useEffect(() => {
      const newEnemies: Enemy[] = [];
      const minionCount = 3 + Math.floor(wave * 1.5);
@@ -591,6 +702,12 @@ useEffect(() => {
     };
 
     const checkCollision = (targetX: number, targetY: number, map: TileType[][]) => {
+        // Defensive: map may not be ready for the first few frames
+        if (!map || map.length === 0 || !map[0] || map[0].length === 0) return false;
+
+        const width = map.length;
+        const height = map[0].length;
+
         const checkRadius = 1;
         const baseTx = Math.floor(targetX);
         const baseTy = Math.floor(targetY);
@@ -599,20 +716,18 @@ useEffect(() => {
             for (let dy = -checkRadius; dy <= checkRadius; dy++) {
                 const tx = baseTx + dx;
                 const ty = baseTy + dy;
-                
-                if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H) {
-                    if (targetX < 0 || targetX > MAP_W || targetY < 0 || targetY > MAP_H) return true;
-                    continue; 
+
+                // Treat outside-map as blocked
+                if (tx < 0 || tx >= width || ty < 0 || ty >= height) {
+                    return true;
                 }
 
                 if (map[tx][ty] === TileType.WATER) {
                     const tileCenterX = tx + 0.5;
                     const tileCenterY = ty + 0.5;
-                    
+
                     const distSq = (targetX - tileCenterX) ** 2 + (targetY - tileCenterY) ** 2;
-                    if (distSq < 0.45 * 0.45) {
-                        return true;
-                    }
+                    if (distSq < 0.45 * 0.45) return true;
                 }
             }
         }
@@ -628,11 +743,15 @@ useEffect(() => {
 
       const dt = Math.min((time - lastTime) / 1000, 0.1);
       lastTime = time;
+
+      weaponEnhanceFlashRef.current = Math.max(0, weaponEnhanceFlashRef.current - dt);
       
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) return;
+
+      try {
 
       const wave = waveRef.current;
       const isAutoplay = isAutoplayRef.current;
@@ -938,8 +1057,31 @@ useEffect(() => {
       const camX = centerX - isoPlayer.x + shakeX;
       const camY = centerY - isoPlayer.y + shakeY;
 
-      ctx.fillStyle = '#064e3b'; 
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+// --- BACKGROUND FILL (use your seamless PNG so the whole screen doesn't look empty) ---
+      const bgImg = groundImgRef.current;
+      if (bgImg && bgImg.complete && bgImg.naturalWidth > 0) {
+        const bgPattern = ctx.createPattern(bgImg, 'repeat');
+        if (bgPattern) {
+          ctx.save();
+          ctx.scale(BG_REPEAT_SCALE, BG_REPEAT_SCALE);
+          ctx.fillStyle = bgPattern;
+          ctx.fillRect(0, 0, canvas.width / BG_REPEAT_SCALE, canvas.height / BG_REPEAT_SCALE);
+          ctx.restore();
+
+          // Slight darken so tiles/characters/UI stay readable
+          ctx.globalAlpha = 0.10;
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.fillStyle = '#064e3b';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      } else {
+        ctx.fillStyle = '#064e3b';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
 
       // --- RENDER MAP ---
       const viewRange = 16;
@@ -966,6 +1108,13 @@ useEffect(() => {
             }
           }
       }
+
+      // Dim the environment slightly so characters/UI pop more (contrast boost)
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
 
       // --- RENDER ENTITIES ---
       const renderList = [];
@@ -1003,12 +1152,23 @@ useEffect(() => {
           const charY = entity.iso.y + camY;
 
           if (!entity.enemy?.isDead) {
+              const isBoss = entity.enemy?.type === EnemyType.BOSS;
+
+              // Ground shadow
               ctx.beginPath();
-              const shadowSize = entity.enemy?.type === EnemyType.BOSS ? 60 : 25; // Bigger shadow for bigger normal enemies
-              const shadowY = entity.enemy?.type === EnemyType.BOSS ? 30 : 12;
-              ctx.ellipse(charX, charY + shadowY, shadowSize, shadowSize / 2.5, 0, 0, Math.PI * 2);
-              ctx.fillStyle = 'rgba(0,0,0,0.3)';
+              const shadowSize = isBoss ? 70 : 28;
+              const shadowY = isBoss ? 34 : 12;
+              ctx.ellipse(charX, charY + shadowY, shadowSize, shadowSize / 2.6, 0, 0, Math.PI * 2);
+              ctx.fillStyle = 'rgba(0,0,0,0.42)';
               ctx.fill();
+
+              // Soft spotlight/halo to improve character contrast against busy ground
+              const halo = ctx.createRadialGradient(charX, charY + shadowY, 0, charX, charY + shadowY, isBoss ? 120 : 70);
+              halo.addColorStop(0, 'rgba(255,255,255,0.10)');
+              halo.addColorStop(0.5, 'rgba(0,0,0,0.05)');
+              halo.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = halo;
+              ctx.fillRect(charX - (isBoss ? 140 : 90), charY - 40, (isBoss ? 280 : 180), (isBoss ? 220 : 160));
           }
 
           if (entity.type === 'player') {
@@ -1034,28 +1194,379 @@ useEffect(() => {
                   // Keep on-screen size similar to old SVG (400 * 0.2 = 80px wide).
                   const scale = 80 / heroW;
 
+                  // --- Animation helpers (paper-doll pivots tuned for the 1600x2000 template) ---
+                  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+                  const walkPhase = time * 0.01; // ms -> smooth
+                  const walkAmt = isMoving ? 1 : 0;
+
+                  const walkLeg = Math.sin(walkPhase) * 0.22 * walkAmt;
+                  const walkLegOpp = Math.sin(walkPhase + Math.PI) * 0.22 * walkAmt;
+                  const walkArm = Math.sin(walkPhase + Math.PI) * 0.16 * walkAmt;
+                  const walkArmOpp = Math.sin(walkPhase) * 0.16 * walkAmt;
+
+                  const idleArmL = 0.06;
+                  const idleArmR = -0.06;
+
+                  // Attack-driven swing (also drives the weapon)
+                  let swing = 0;
+                  if (attackAnimRef.current > 0) {
+                    const a = clamp01(attackAnimRef.current / 1.0); // normalize
+                    // Windup (0..0.25), slash (0.25..0.75), recover (0.75..1)
+                    if (a < 0.25) {
+                      swing = -0.85 * (a / 0.25);
+                    } else if (a < 0.75) {
+                      const p = (a - 0.25) / 0.50;
+                      swing = -0.85 + (p * 1.55); // -0.85 -> +0.70
+                    } else {
+                      const p = (a - 0.75) / 0.25;
+                      swing = 0.70 * (1 - p);
+                    }
+                  }
+
+                  // Determine weapon side to FOLLOW enemy position (visual right/left in isometric screen space)
+                  let enemyOnRight = !lastFacingLeftRef.current;
+                  if (nearestEnemy && minDst < 20) {
+                    const dxE = nearestEnemy.x - posRef.current.x;
+                    const dyE = nearestEnemy.y - posRef.current.y;
+                    // Isometric screen-X is proportional to (dx - dy)
+                    enemyOnRight = (dxE - dyE) > 0;
+                  }
+                  const weaponOnRight = enemyOnRight; // follow enemy side
+                  // During attack: if enemy is on the RIGHT, flip the character+weapon (as requested).
+                  // Otherwise (idle/walk): face the enemy normally.
+                  const facingLeftVisual = (attackAnimRef.current > 0) ? enemyOnRight : !enemyOnRight;
+                  lastFacingLeftRef.current = facingLeftVisual;
+
+                  // Pivots (in hero sprite coordinate space)
+                  const P = {
+                    hipL: { x: heroW * 0.46, y: heroH * 0.72 },
+                    hipR: { x: heroW * 0.54, y: heroH * 0.72 },
+                    shL:  { x: heroW * 0.41, y: heroH * 0.50 },
+                    shR:  { x: heroW * 0.59, y: heroH * 0.50 },
+                  };
+
+                  const drawPartRot = (key: string, rot: number, px: number, py: number, extraY: number) => {
+                    const img = sprites[key];
+                    if (!img || img.naturalWidth <= 0) return;
+                    ctx.save();
+                    ctx.translate(px, py + extraY);
+                    ctx.rotate(rot);
+                    ctx.translate(-px, -(py + extraY));
+                    ctx.drawImage(img, 0, 0);
+                    ctx.restore();
+                  };
+
+                  // Bob: subtle breathing / walking bounce
+                  const bob = (isMoving ? (Math.abs(Math.sin(walkPhase)) * 12) : (Math.sin(walkPhase * 0.5) * 6));
+
                   ctx.save();
                   ctx.translate(charX, charY);
+
+                  // Strong shadow to separate from busy ground
+                  ctx.shadowColor = 'rgba(0,0,0,0.85)';
+                  ctx.shadowBlur = 18;
+                  ctx.shadowOffsetX = 0;
+                  ctx.shadowOffsetY = 8;
+
                   if (playerIFrameRef.current > 0 && Math.floor(time / 100) % 2 === 0) ctx.globalAlpha = 0.5;
-                  if (facingLeft) ctx.scale(-scale, scale); else ctx.scale(scale, scale);
 
-                  // Anchor: center-x and ~feet (80% down), same concept as old (-200, -400) on 400x500.
+                  // Flip whole character to face enemy
+                  if (facingLeftVisual) ctx.scale(-scale, scale);
+                  else ctx.scale(scale, scale);
+
+                  // Anchor: center-x and ~feet (80% down)
                   ctx.translate(-heroW / 2, -(heroH * 0.8));
-
-                  // Simple bob (scaled up for large sprites so it remains visible).
-                  const bob = body_Y * (heroH / 500);
 
                   // Layer order (back to front)
                   if (sprites.cloak) ctx.drawImage(sprites.cloak, 0, bob);
-                  if (sprites.legL) ctx.drawImage(sprites.legL, 0, 0);
-                  if (sprites.legR) ctx.drawImage(sprites.legR, 0, 0);
-                  ctx.drawImage(sprites.body, 0, bob);
-                  if (sprites.head) ctx.drawImage(sprites.head, 0, bob);
-                  if (sprites.armL) ctx.drawImage(sprites.armL, 0, bob);
-                  if (sprites.armR) ctx.drawImage(sprites.armR, 0, bob);
 
-                  ctx.restore();
-                  continue;
+                  // Legs (walk)
+                  drawPartRot('legL', walkLeg, P.hipL.x, P.hipL.y, bob);
+                  drawPartRot('legR', walkLegOpp, P.hipR.x, P.hipR.y, bob);
+
+                  // Body + head
+                  if (sprites.body) ctx.drawImage(sprites.body, 0, bob);
+                  if (sprites.head) ctx.drawImage(sprites.head, 0, bob);
+
+                  // Arms (walk + attack)
+                  // "Front arm" is the one on the weapon side.
+                  const frontIsRight = weaponOnRight;
+                  const frontArmKey = frontIsRight ? 'armR' : 'armL';
+                  const backArmKey  = frontIsRight ? 'armL' : 'armR';
+                  const frontPivot  = frontIsRight ? P.shR : P.shL;
+                  const backPivot   = frontIsRight ? P.shL : P.shR;
+
+                  const frontArmRot =
+                    (frontIsRight ? idleArmR : idleArmL) +
+                    (frontIsRight ? walkArmOpp : walkArm) +
+                    (attackAnimRef.current > 0 ? (swing * 0.65) : 0);
+
+                  const backArmRot =
+                    (frontIsRight ? idleArmL : idleArmR) +
+                    (frontIsRight ? walkArm : walkArmOpp) -
+                    (attackAnimRef.current > 0 ? (swing * 0.25) : 0);
+
+                  // Draw back arm first
+                  drawPartRot(backArmKey, backArmRot, backPivot.x, backPivot.y, bob);
+
+                  // Weapon + FX settings (shared by weapon + slash VFX)
+                  const weaponItem = equippedItems.find(i => i.type === ItemType.WEAPON);
+                  const weaponName = weaponItem?.name || '';
+                  const upgradeLevelShared = weaponItem?.upgradeLevel || 0;
+
+                  // Weapon (attached to the front hand) + bigger swing + enhancement glow
+                  if (sprites.weapon) {
+                    const upgradeLevel = upgradeLevelShared;
+                    const name = weaponName;
+
+                    // Hand position in the 1600x2000 hero template
+                    const rightHandX = 280;
+                    const leftHandX = heroW - rightHandX;
+                    const handXBase = weaponOnRight ? rightHandX : leftHandX;
+                    const handSway = isMoving ? (Math.sin(walkPhase) * 8 * (weaponOnRight ? 1 : -1)) : 0;
+                    const handX = handXBase + handSway;
+                    const handY = 1320 + bob;
+
+
+                    // Pivot (grip point) in weapon image coords
+                    const pivotX = 470;
+                    const pivotY = 830;
+
+                    // Natural hold angle + attack swing
+                    const BASE_HOLD_ROT = -0.35;
+                    const facingSign = facingLeftVisual ? -1 : 1;
+                    const swordWalk = isMoving ? ((frontIsRight ? walkArmOpp : walkArm) * 0.85) : 0;
+                    const weaponRot = (BASE_HOLD_ROT * facingSign) + (swing * 1.15) + swordWalk; // swing + walk follow
+
+
+                    // Scale for PNG weapon
+                    const weaponScale = 2;
+
+                    // Glow color by weapon theme
+                    let glowColor = 'rgba(34, 211, 238, 0.65)'; // default cyan
+                    if (weaponName.includes('Obsidian')) glowColor = 'rgba(192, 132, 252, 0.65)';
+                    else if (weaponName.includes('Inferno')) glowColor = 'rgba(251, 146, 60, 0.70)';
+                    else if (weaponName.includes('Dragon')) glowColor = 'rgba(74, 222, 128, 0.70)';
+                    else if (weaponName.includes('Samurai')) glowColor = 'rgba(250, 204, 21, 0.70)';
+                    else if (weaponName.includes('Damascus')) glowColor = 'rgba(148, 163, 184, 0.70)';
+
+                    // Enhancement flash (triggered in useEffect above)
+                    const flash = weaponEnhanceFlashRef.current;
+                    const flashT = Math.min(1, flash / 0.45);
+
+                    const baseGlow = upgradeLevel > 0 ? (10 + upgradeLevel * 2) : 0;
+                    const glow = Math.min(60, baseGlow + flashT * 28);
+
+                    ctx.save();
+                    ctx.translate(handX, handY);
+                    ctx.rotate(weaponRot);
+                    ctx.scale(weaponScale, weaponScale);
+
+                    // IMPORTANT: single pass draw (prevents tiny duplicate/ghost weapons)
+                    if (glow > 0) {
+                      ctx.shadowBlur = glow;
+                      // boost alpha during flash
+                      ctx.shadowColor = flashT > 0
+                        ? glowColor.replace(/0\.\d+\)$/, `${Math.min(0.95, 0.65 + flashT * 0.3)})`)
+                        : glowColor;
+                    } else {
+                      ctx.shadowBlur = 0;
+                      ctx.shadowColor = 'transparent';
+                    }
+
+                    
+                    ctx.drawImage(sprites.weapon, -pivotX, -pivotY);
+
+
+                    // --- Enhancement VFX (10-20): brighter + cooler animation (scales with level) ---
+                    if (upgradeLevel >= 10) {
+                      const tier2 = Math.max(0, Math.min(1, (upgradeLevel - 10) / 10)); // 0..1 for +10..+20
+                      const tier3 = upgradeLevel >= 20;
+
+                      // Choose a matching core highlight color (kept bright for readability)
+                      const coreFx = 'rgba(255,255,255,0.85)';
+
+                      // Stronger pulse as level increases
+                      const p = 0.75 + Math.sin(time * (0.010 + tier2 * 0.008)) * (0.10 + tier2 * 0.10);
+
+                      ctx.save();
+                      ctx.globalCompositeOperation = 'lighter';
+
+                      // Blade sheath (soft aura hugging the blade)
+                      ctx.globalAlpha = 0.10 + tier2 * 0.22;
+                      ctx.fillStyle = glowColor;
+                      ctx.beginPath();
+                      ctx.ellipse(0, -220, (28 + tier2 * 18) * p, 240 + tier2 * 60, 0, 0, Math.PI * 2);
+                      ctx.fill();
+
+                      // Core highlight
+                      ctx.globalAlpha = (0.08 + tier2 * 0.16) * p;
+                      ctx.fillStyle = coreFx;
+                      ctx.beginPath();
+                      ctx.ellipse(0, -235, (16 + tier2 * 10) * p, 190, 0, 0, Math.PI * 2);
+                      ctx.fill();
+
+                      // Animated motes rising along the blade (count scales with tier2, capped for perf)
+                      const moteCount = Math.min(12, 5 + Math.floor(tier2 * 7));
+                      for (let i = 0; i < moteCount; i++) {
+                        const phase = (time * (0.0016 + tier2 * 0.0014) + i * 0.43) % 1;
+                        const y = -60 - phase * (360 + tier2 * 90);
+                        const x = Math.sin(phase * (9 + i) + time * 0.003) * (10 + tier2 * 14) * (1 - phase);
+                        const r = (1 - phase) * (2.4 + tier2 * 2.0);
+
+                        ctx.globalAlpha = (1 - phase) * (0.30 + tier2 * 0.40);
+                        ctx.fillStyle = (i % 2 === 0) ? coreFx : glowColor;
+                        ctx.beginPath();
+                        ctx.arc(x, y, r, 0, Math.PI * 2);
+                        ctx.fill();
+                      }
+
+                      // Level 20: rotating rune ring at the grip (looks "legendary")
+                      if (tier3) {
+                        ctx.save();
+                        const spin = time * 0.0045;
+                        ctx.translate(0, -210);
+                        ctx.rotate(spin);
+                        ctx.globalAlpha = 0.85;
+                        ctx.strokeStyle = glowColor;
+                        ctx.lineWidth = 6;
+                        ctx.beginPath();
+                        ctx.arc(0, 0, 120 + Math.sin(time * 0.012) * 6, 0, Math.PI * 1.65);
+                        ctx.stroke();
+
+                        ctx.rotate(-spin * 1.7);
+                        ctx.globalAlpha = 0.55;
+                        ctx.strokeStyle = coreFx;
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.arc(0, 0, 96, 0, Math.PI * 2);
+                        ctx.stroke();
+
+                        // Rune ticks
+                        const ticks = 10;
+                        for (let k = 0; k < ticks; k++) {
+                          const a = (k / ticks) * Math.PI * 2;
+                          const x1 = Math.cos(a) * 92;
+                          const y1 = Math.sin(a) * 92;
+                          const x2 = Math.cos(a) * 116;
+                          const y2 = Math.sin(a) * 116;
+                          ctx.globalAlpha = 0.25 + 0.20 * Math.sin(time * 0.01 + k);
+                          ctx.strokeStyle = '#ffffff';
+                          ctx.lineWidth = 2;
+                          ctx.beginPath();
+                          ctx.moveTo(x1, y1);
+                          ctx.lineTo(x2, y2);
+                          ctx.stroke();
+                        }
+
+                        ctx.restore();
+                      }
+
+                      ctx.globalCompositeOperation = 'source-over';
+                      ctx.restore();
+                    }
+
+
+                    // --- Sword Swing Trail FX (during slash) ---
+                    if (attackAnimRef.current > 0.18 && attackAnimRef.current < 0.78) {
+                      const sp = Math.max(0, Math.min(1, (attackAnimRef.current - 0.18) / 0.60));
+                      ctx.save();
+                      ctx.globalCompositeOperation = 'lighter';
+                      ctx.globalAlpha = 0.75 * (1 - sp);
+
+                      // Use the same theme color as the glow for consistency
+                                            const fxColor = flashT > 0 ? 'rgba(255,255,255,0.85)' : glowColor;
+
+                      // Arc around the grip, aligned to the weapon rotation
+                      const startA = -1.75;
+                      const endA = 0.55;
+                      const a = startA + (endA - startA) * Math.pow(sp, 0.6);
+
+                      // Outer arc
+                      ctx.strokeStyle = fxColor;
+                      ctx.lineWidth = 10;
+                      ctx.shadowBlur = 0;
+                      ctx.beginPath();
+                      ctx.arc(0, -120, 240, a - 0.35, a + 0.35);
+                      ctx.stroke();
+
+                      // Inner bright core
+                      ctx.globalAlpha *= 0.65;
+                      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+                      ctx.lineWidth = 4;
+                      ctx.beginPath();
+                      ctx.arc(0, -120, 210, a - 0.25, a + 0.25);
+                      ctx.stroke();
+
+                      ctx.globalCompositeOperation = 'source-over';
+                      ctx.restore();
+                    }
+
+
+                    // Reset shadow so it won't affect arms/head
+                    ctx.shadowBlur = 0;
+                    ctx.shadowColor = 'transparent';
+                    ctx.restore();
+                  }
+
+                  // Front arm last so the hand overlaps the handle (more natural)
+                  drawPartRot(frontArmKey, frontArmRot, frontPivot.x, frontPivot.y, bob);
+
+                  
+// --- Slash VFX (PNG hero) ---
+if (attackAnimRef.current > 0.18 && attackAnimRef.current < 0.78) {
+  const slashProgress = (attackAnimRef.current - 0.18) / 0.60;
+  const sp = Math.max(0, Math.min(1, slashProgress));
+
+  // Pick a good FX color (match weapon theme)
+  let outerColor = '#06b6d4';
+  if (weaponName.includes('Obsidian')) outerColor = '#a855f7';
+  else if (weaponName.includes('Inferno')) outerColor = '#f97316';
+  else if (weaponName.includes('Dragon')) outerColor = '#22c55e';
+  else if (weaponName.includes('Samurai')) outerColor = '#facc15';
+  else if (weaponName.includes('Damascus')) outerColor = '#cbd5e1';
+
+  ctx.save();
+  ctx.translate(charX, charY - 28);
+  if (facingLeftVisual) ctx.scale(-1, 1);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.95 * (1 - Math.pow(sp, 2));
+
+  const startAngle = -Math.PI / 1.45;
+  const endAngle = Math.PI / 3.2;
+  const currentAngle = startAngle + (endAngle - startAngle) * Math.pow(sp, 0.55);
+
+  ctx.rotate(currentAngle);
+
+  const slashRadius = 92;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.bezierCurveTo(slashRadius * 0.55, -slashRadius * 0.85, slashRadius * 1.25, -slashRadius * 0.2, slashRadius, 0);
+  ctx.bezierCurveTo(slashRadius * 0.82, -slashRadius * 0.12, slashRadius * 0.38, -slashRadius * 0.12, 0, 0);
+  ctx.closePath();
+
+  const g = ctx.createRadialGradient(0, 0, 18, 0, 0, slashRadius);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)');
+  g.addColorStop(0.35, outerColor);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // Extra thin arc line for crispness
+  ctx.globalAlpha = 0.55 * (1 - sp);
+  ctx.strokeStyle = outerColor;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 70, -0.15, 0.55);
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+ctx.restore();
+continue;
               }
 
 const scale = 0.2; 
@@ -1106,7 +1617,8 @@ const scale = 0.2;
               
               ctx.rotate(Math.PI / 2); ctx.scale(5, 5); 
 
-              // --- ENHANCED WEAPON FX ---
+              
+              // --- ENHANCED WEAPON FX (Up to +20) ---
               if (upgradeLevel > 0) {
                  let glowColor = '#22d3ee'; // Default Cyan
                  let coreColor = '#cffafe';
@@ -1117,74 +1629,146 @@ const scale = 0.2;
                  else if (isSamurai) { glowColor = '#facc15'; coreColor = '#fef9c3'; }
                  else if (isDamascus) { glowColor = '#94a3b8'; coreColor = '#f8fafc'; }
 
-                 // Intensity & Pulse (Tier 1)
-                 const baseIntensity = 15 + (upgradeLevel * 2); 
-                 const pulseFreq = 0.005 + (upgradeLevel * 0.0005);
-                 const pulse = 0.8 + Math.sin(time * pulseFreq) * 0.2; 
-                 
-                 ctx.shadowBlur = Math.min(50, baseIntensity * pulse);
+                 // Normalize enhancement tiers
+                 const tier2 = Math.max(0, Math.min(1, (upgradeLevel - 10) / 10)); // 0..1 for +10..+20
+                 const tier3 = upgradeLevel >= 20 ? 1 : 0;
+
+                 // Pulse / shimmer (stronger with enhancement)
+                 const pulseFreq = 0.006 + (upgradeLevel * 0.00045);
+                 const pulse = 0.78 + Math.sin(time * pulseFreq) * (0.18 + tier2 * 0.10);
+                 const flicker = 0.92 + (Math.sin(time * 0.021) + Math.cos(time * 0.013)) * 0.04;
+
+                 // Base glow: ramps harder after +10
+                 const baseIntensity = 14 + (upgradeLevel * 2.2) + (tier2 * 18);
+                 const glowBlur = Math.min(70, baseIntensity * pulse * flicker);
+
+                 ctx.shadowBlur = glowBlur;
                  ctx.shadowColor = glowColor;
 
-                 // Tier 2: Aura Sheath & Particles (Level 10+)
+                 // --- Tier 2 (10-19): brighter sheath + animated energy motes ---
                  if (upgradeLevel >= 10) {
                     ctx.save();
-                    ctx.globalCompositeOperation = 'screen';
-                    ctx.globalAlpha = 0.2 + ((upgradeLevel - 10) * 0.03); 
+                    ctx.globalCompositeOperation = 'lighter';
+
+                    // Sheath alpha increases with tier2, but stays tasteful
+                    const sheathAlpha = 0.14 + tier2 * 0.26;
+                    ctx.globalAlpha = sheathAlpha;
+
+                    // Blade sheath (soft ellipse)
                     ctx.fillStyle = glowColor;
-                    
-                    // Aura shape matching blade roughly
                     ctx.beginPath();
-                    ctx.ellipse(0, -45, 12 * pulse, 55, 0, 0, Math.PI*2);
+                    ctx.ellipse(0, -48, 11 + pulse * (5 + tier2 * 6), 58 + tier2 * 10, 0, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // Energy Particles
-                    const particleCount = Math.floor((upgradeLevel - 5) / 2);
+                    // Core highlight
+                    ctx.globalAlpha = sheathAlpha * 0.65;
                     ctx.fillStyle = coreColor;
-                    for(let i=0; i<particleCount; i++) {
-                        const pTime = (time * 0.003 + (i * 1.5)) % 1; 
-                        const pY = -10 - (pTime * 85); 
-                        const pX = Math.sin(pTime * 15 + i) * 6 * (1-pTime); 
-                        const pSize = (1 - pTime) * 2;
-                        
-                        ctx.globalAlpha = (1 - pTime);
+                    ctx.beginPath();
+                    ctx.ellipse(0, -50, 6 + pulse * 2, 46, 0, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Animated motes (count scales with tier2, capped for perf)
+                    const moteCount = Math.min(14, 6 + Math.floor(tier2 * 10));
+                    for (let i = 0; i < moteCount; i++) {
+                        const phase = (time * (0.0018 + tier2 * 0.0012) + i * 0.37) % 1;
+                        const y = -8 - phase * (92 + tier2 * 18);
+                        const wobble = Math.sin(phase * (10 + i) + time * 0.002) * (4 + tier2 * 4);
+                        const r = (1 - phase) * (1.8 + tier2 * 1.6);
+
+                        ctx.globalAlpha = (1 - phase) * (0.55 + tier2 * 0.35);
+                        ctx.fillStyle = (i % 2 === 0) ? coreColor : glowColor;
                         ctx.beginPath();
-                        ctx.arc(pX, pY, pSize, 0, Math.PI*2);
+                        ctx.arc(wobble, y, r, 0, Math.PI * 2);
                         ctx.fill();
                     }
+
+                    // Micro sparks along blade edge
+                    const sparkCount = Math.min(10, 3 + Math.floor(tier2 * 7));
+                    for (let k = 0; k < sparkCount; k++) {
+                        const s = (time * 0.003 + k * 0.63) % 1;
+                        const y = -18 - s * 74;
+                        const x = (k % 2 === 0 ? 1 : -1) * (7 + tier2 * 3) * (0.2 + Math.sin(time * 0.01 + k) * 0.8);
+                        ctx.globalAlpha = (1 - s) * (0.35 + tier2 * 0.25);
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath();
+                        ctx.arc(x, y, 0.9 + tier2 * 0.7, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    ctx.globalCompositeOperation = 'source-over';
                     ctx.restore();
                  }
 
-                 // Tier 3: God Mode Ring (Level 20)
-                 if (upgradeLevel >= 20) {
+                 // --- Tier 3 (+20): rune rings + rotating geometry ---
+                 if (tier3) {
                     ctx.save();
-                    ctx.translate(0, -45); 
-                    const spin = time * 0.004;
-                    
-                    // Rotating Energy Ring
-                    ctx.rotate(spin);
-                    ctx.lineWidth = 1;
-                    ctx.strokeStyle = glowColor;
-                    ctx.globalAlpha = 0.9;
-                    ctx.beginPath();
-                    ctx.arc(0, 0, 30 + Math.sin(time*0.01)*2, 0, Math.PI*1.6);
-                    ctx.stroke();
+                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.translate(0, -48);
 
-                    // Counter-rotating Rune Geometry
-                    ctx.rotate(-spin * 2.5);
-                    ctx.lineWidth = 0.5;
+                    const spin = time * 0.0045;
+                    const ringR = 30 + Math.sin(time * 0.012) * 2;
+
+                    // Outer ring
+                    ctx.save();
+                    ctx.rotate(spin);
+                    ctx.globalAlpha = 0.9;
+                    ctx.strokeStyle = glowColor;
+                    ctx.lineWidth = 1.2;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, ringR, 0, Math.PI * 1.85);
+                    ctx.stroke();
+                    ctx.restore();
+
+                    // Inner ring
+                    ctx.save();
+                    ctx.rotate(-spin * 1.6);
+                    ctx.globalAlpha = 0.6;
                     ctx.strokeStyle = coreColor;
+                    ctx.lineWidth = 0.9;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, ringR - 8, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+
+                    // Rune ticks
+                    ctx.save();
+                    ctx.rotate(spin * 0.7);
+                    const ticks = 10;
+                    for (let r = 0; r < ticks; r++) {
+                        const a = (r / ticks) * Math.PI * 2;
+                        const x1 = Math.cos(a) * (ringR - 2);
+                        const y1 = Math.sin(a) * (ringR - 2);
+                        const x2 = Math.cos(a) * (ringR + 4);
+                        const y2 = Math.sin(a) * (ringR + 4);
+                        ctx.globalAlpha = 0.35 + 0.25 * Math.sin(time * 0.01 + r);
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 0.8;
+                        ctx.beginPath();
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(x2, y2);
+                        ctx.stroke();
+                    }
+                    ctx.restore();
+
+                    // Rotating triangle glyph
+                    ctx.save();
+                    ctx.rotate(-spin * 2.2);
+                    ctx.globalAlpha = 0.55;
+                    ctx.strokeStyle = glowColor;
+                    ctx.lineWidth = 0.9;
                     ctx.beginPath();
                     const sides = 3;
-                    for(let k=0; k<=sides; k++) {
-                        const angle = k * (Math.PI*2/sides);
-                        const r = 20;
-                        const rx = Math.cos(angle) * r;
-                        const ry = Math.sin(angle) * r;
-                        if(k===0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
+                    for (let k = 0; k <= sides; k++) {
+                        const a = k * (Math.PI * 2 / sides);
+                        const rx = Math.cos(a) * 18;
+                        const ry = Math.sin(a) * 18;
+                        if (k === 0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
                     }
                     ctx.closePath();
                     ctx.stroke();
+                    ctx.restore();
 
+                    ctx.globalCompositeOperation = 'source-over';
                     ctx.restore();
                  }
               }
@@ -1275,6 +1859,10 @@ const scale = 0.2;
               const theme = getEnemyTheme(e.type, wave) as any;
 
               ctx.save(); ctx.translate(charX, charY); ctx.globalAlpha = alpha;
+              ctx.shadowColor = 'rgba(0,0,0,0.85)';
+              ctx.shadowBlur = 14;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = 8;
               if (isDead) { const sink = (1 - (e.deathAnim || 1)) * 20; ctx.translate(0, sink); ctx.fillStyle = '#000'; }
               if (!isDead && time - e.lastHitTime < 150) { ctx.globalCompositeOperation = 'source-atop'; ctx.fillStyle = 'white'; }
 
@@ -1287,79 +1875,125 @@ const scale = 0.2;
                   ctx.translate(0, -20); // Center adjustment
 
                   if (bossTheme.type === 'TREX') {
-                      // --- T-REX RENDERER ---
-                      const step = Math.sin(time * 0.005);
-                      const bodyBob = Math.abs(step) * 2;
-                      const tailWag = Math.sin(time * 0.003) * 0.2;
+                      // Primeval Rex (PNG replacement)
+                      const bob = Math.sin(time * 0.005) * 6;
 
-                      // Tail
-                      ctx.save(); ctx.translate(-15, -15 + bodyBob); ctx.rotate(tailWag);
-                      ctx.fillStyle = bossTheme.colors.skin;
-                      ctx.beginPath(); ctx.moveTo(0, 0); 
-                      ctx.quadraticCurveTo(-20, 5, -40, -5); 
-                      ctx.quadraticCurveTo(-20, -15, 0, 0); ctx.fill(); 
-                      ctx.restore();
+                      const bossImg = bossPrimevalRexRef.current;
+                      if (bossImg && bossImg.complete && bossImg.naturalWidth > 0) {
+                          // Draw centered, feet-anchored.
+                          const scale = 0.12; // adjust to resize Primeval Rex
+                          const w = bossImg.naturalWidth * scale;
+                          const h = bossImg.naturalHeight * scale;
 
-                      // Body
-                      ctx.save(); ctx.translate(0, bodyBob);
-                      ctx.fillStyle = bossTheme.colors.skin;
-                      ctx.beginPath(); ctx.ellipse(0, 0, 25, 18, 0, 0, Math.PI*2); ctx.fill();
-                      ctx.fillStyle = bossTheme.colors.detail; // Stripes
-                      ctx.beginPath(); ctx.moveTo(-5, -15); ctx.lineTo(-2, 10); ctx.lineTo(2, -15); ctx.fill();
-                      
-                      // Legs
-                      ctx.translate(-5, 15);
-                      ctx.fillStyle = bossTheme.colors.dark;
-                      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-5, 15); ctx.lineTo(5, 15); ctx.fill(); // L Leg
-                      ctx.translate(15, 0);
-                      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-5, 15); ctx.lineTo(5, 15); ctx.fill(); // R Leg
-                      ctx.restore();
+                          ctx.save();
+                          ctx.translate(0, bob - 10);
+                          ctx.drawImage(bossImg, -w / 2, -h * 0.78, w, h);
+                          ctx.restore();
+                      } else {
+                          // Fallback procedural T-REX
+                          const step = Math.sin(time * 0.005);
+                          const bodyBob = Math.abs(step) * 2;
+                          const tailWag = Math.sin(time * 0.003) * 0.2;
 
-                      // Head
-                      ctx.save(); ctx.translate(15, -15 + bodyBob); 
-                      ctx.rotate(Math.sin(time * 0.005) * 0.1);
-                      ctx.fillStyle = bossTheme.colors.skin;
-                      ctx.beginPath(); ctx.moveTo(-5, 5); ctx.lineTo(25, 5); ctx.lineTo(20, -15); ctx.lineTo(-5, -10); ctx.fill();
-                      // Jaw
-                      ctx.fillStyle = bossTheme.colors.dark;
-                      ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(20, 5); ctx.lineTo(15, 10); ctx.lineTo(0, 8); ctx.fill();
-                      // Eye
-                      ctx.fillStyle = bossTheme.colors.glow;
-                      ctx.beginPath(); ctx.arc(10, -5, 2, 0, Math.PI*2); ctx.fill();
-                      ctx.restore();
-                      
-                      // Tiny Arms
-                      ctx.save(); ctx.translate(10, -5 + bodyBob);
-                      ctx.rotate(Math.sin(time * 0.02) * 0.5);
-                      ctx.fillStyle = bossTheme.colors.skin;
-                      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(5, 5); ctx.lineWidth=2; ctx.stroke();
-                      ctx.restore();
+                          // Tail
+                          ctx.save(); ctx.translate(-15, -15 + bodyBob); ctx.rotate(tailWag);
+                          ctx.fillStyle = bossTheme.colors.skin;
+                          ctx.beginPath(); ctx.moveTo(0, 0); 
+                          ctx.quadraticCurveTo(-20, 5, -40, -5); 
+                          ctx.quadraticCurveTo(-20, -15, 0, 0); ctx.fill(); 
+                          ctx.restore();
+
+                          // Body
+                          ctx.save(); ctx.translate(0, bodyBob);
+                          ctx.fillStyle = bossTheme.colors.skin;
+                          ctx.beginPath(); ctx.ellipse(0, 0, 25, 18, 0, 0, Math.PI*2); ctx.fill();
+                          ctx.fillStyle = bossTheme.colors.detail; // Stripes
+                          ctx.beginPath(); ctx.moveTo(-5, -15); ctx.lineTo(-2, 10); ctx.lineTo(2, -15); ctx.fill();
+
+                          // Legs
+                          ctx.translate(-5, 15);
+                          ctx.fillStyle = bossTheme.colors.dark;
+                          ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-5, 15); ctx.lineTo(5, 15); ctx.fill(); // L Leg
+                          ctx.translate(15, 0);
+                          ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-5, 15); ctx.lineTo(5, 15); ctx.fill(); // R Leg
+                          ctx.restore();
+
+                          // Head
+                          ctx.save(); ctx.translate(15, -15 + bodyBob); 
+                          ctx.rotate(Math.sin(time * 0.005) * 0.1);
+                          ctx.fillStyle = bossTheme.colors.skin;
+                          ctx.beginPath(); ctx.moveTo(-5, 5); ctx.lineTo(25, 5); ctx.lineTo(20, -15); ctx.lineTo(-5, -10); ctx.fill();
+                          // Jaw
+                          ctx.fillStyle = bossTheme.colors.dark;
+                          ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(20, 5); ctx.lineTo(15, 10); ctx.lineTo(0, 8); ctx.fill();
+                          // Eye
+                          ctx.fillStyle = bossTheme.colors.glow;
+                          ctx.beginPath(); ctx.arc(10, -5, 2, 0, Math.PI*2); ctx.fill();
+                          ctx.restore();
+
+                          // Tiny Arms
+                          ctx.save(); ctx.translate(10, -5 + bodyBob);
+                          ctx.rotate(Math.sin(time * 0.02) * 0.5);
+                          ctx.fillStyle = bossTheme.colors.skin;
+                          ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(5, 5); ctx.lineWidth=2; ctx.stroke();
+                          ctx.restore();
+                      }
 
                   } else if (bossTheme.type === 'LICH') {
-                       // Lich
-                       const bob = Math.sin(time * 0.005) * 5;
-                       ctx.translate(0, bob);
-                       ctx.fillStyle = bossTheme.colors.dark;
-                       ctx.beginPath(); ctx.moveTo(-15, 20); ctx.lineTo(15, 20); ctx.lineTo(10, -20); ctx.lineTo(-10, -20); ctx.fill(); // Robe
-                       ctx.fillStyle = bossTheme.colors.skin;
-                       ctx.beginPath(); ctx.arc(0, -25, 8, 0, Math.PI*2); ctx.fill(); // Skull
-                       ctx.fillStyle = bossTheme.colors.glow;
-                       ctx.beginPath(); ctx.arc(-3, -25, 2, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(3, -25, 2, 0, Math.PI*2); ctx.fill();
-                       // Crown
-                       ctx.fillStyle = bossTheme.colors.detail;
-                       ctx.beginPath(); ctx.moveTo(-8, -30); ctx.lineTo(8, -30); ctx.lineTo(0, -40); ctx.fill();
+                       // Lich (PNG replacement: The Undying King)
+                       const bob = Math.sin(time * 0.005) * 6;
+
+                       const bossImg = bossUndyingKingRef.current;
+                       if (bossImg && bossImg.complete && bossImg.naturalWidth > 0) {
+                           // Draw centered, feet-anchored. Keep consistent size with other bosses.
+                           const scale = 0.12; // tuned for 2048x2048 source
+                           const w = bossImg.naturalWidth * scale;
+                           const h = bossImg.naturalHeight * scale;
+
+                           ctx.save();
+                           ctx.translate(0, bob - 10); // slight lift so feet sit on ground shadow
+                           ctx.drawImage(bossImg, -w / 2, -h * 0.78, w, h);
+                           ctx.restore();
+                       } else {
+                           // Fallback procedural lich if PNG missing
+                           ctx.translate(0, bob);
+                           ctx.fillStyle = bossTheme.colors.dark;
+                           ctx.beginPath(); ctx.moveTo(-15, 20); ctx.lineTo(15, 20); ctx.lineTo(10, -20); ctx.lineTo(-10, -20); ctx.fill(); // Robe
+                           ctx.fillStyle = bossTheme.colors.skin;
+                           ctx.beginPath(); ctx.arc(0, -25, 8, 0, Math.PI*2); ctx.fill(); // Skull
+                           ctx.fillStyle = bossTheme.colors.glow;
+                           ctx.beginPath(); ctx.arc(-3, -25, 2, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(3, -25, 2, 0, Math.PI*2); ctx.fill();
+                           // Crown
+                           ctx.fillStyle = bossTheme.colors.detail;
+                           ctx.beginPath(); ctx.moveTo(-8, -30); ctx.lineTo(8, -30); ctx.lineTo(0, -40); ctx.fill();
+                       }
 
                   } else if (bossTheme.type === 'DRAGON') {
-                      // Dragon
-                      ctx.fillStyle = bossTheme.colors.skin;
-                      ctx.beginPath(); ctx.ellipse(0, 0, 30, 15, 0, 0, Math.PI*2); ctx.fill(); // Body
-                      // Wings
-                      ctx.fillStyle = bossTheme.colors.dark;
-                      ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(-40, -30); ctx.lineTo(-20, 0); ctx.fill();
-                      ctx.beginPath(); ctx.moveTo(10, -10); ctx.lineTo(40, -30); ctx.lineTo(20, 0); ctx.fill();
-                      // Neck & Head
-                      ctx.beginPath(); ctx.moveTo(15, -5); ctx.quadraticCurveTo(25, -20, 35, -25); ctx.lineTo(45, -20); ctx.lineTo(35, -5); ctx.fill();
-                      
+                      // Inferno Drake (PNG replacement)
+                      const bob = Math.sin(time * 0.005) * 6;
+
+                      const bossImg = bossInfernoDrakeRef.current;
+                      if (bossImg && bossImg.complete && bossImg.naturalWidth > 0) {
+                          const scale = 0.12; // adjust to resize Inferno Drake
+                          const w = bossImg.naturalWidth * scale;
+                          const h = bossImg.naturalHeight * scale;
+
+                          ctx.save();
+                          ctx.translate(0, bob - 10);
+                          ctx.drawImage(bossImg, -w / 2, -h * 0.78, w, h);
+                          ctx.restore();
+                      } else {
+                          // Fallback procedural dragon
+                          ctx.fillStyle = bossTheme.colors.skin;
+                          ctx.beginPath(); ctx.ellipse(0, 0, 30, 15, 0, 0, Math.PI*2); ctx.fill(); // Body
+                          // Wings
+                          ctx.fillStyle = bossTheme.colors.dark;
+                          ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(-40, -30); ctx.lineTo(-20, 0); ctx.fill();
+                          ctx.beginPath(); ctx.moveTo(10, -10); ctx.lineTo(40, -30); ctx.lineTo(20, 0); ctx.fill();
+                          // Neck & Head
+                          ctx.beginPath(); ctx.moveTo(15, -5); ctx.quadraticCurveTo(25, -20, 35, -25); ctx.lineTo(45, -20); ctx.lineTo(35, -5); ctx.fill();
+                      }
+
                   } else {
                       // Wraith
                       const bob = Math.sin(time * 0.01) * 5;
@@ -1584,6 +2218,11 @@ const scale = 0.2;
 
       if (shakeRef.current > 0) shakeRef.current = Math.max(0, shakeRef.current - dt * 20);
 
+      }
+      catch (err) {
+        console.error('Render loop crashed:', err);
+      }
+
       animationFrameId = requestAnimationFrame(render);
     };
 
@@ -1591,7 +2230,24 @@ const scale = 0.2;
     return () => cancelAnimationFrame(animationFrameId);
   }, [spritesLoaded]);
 
-  return <canvas ref={canvasRef} className="block touch-none" />;
+  return (
+    <div className="relative">
+      <div className="absolute left-4 top-[180px] z-20 rounded-xl bg-black/40 backdrop-blur px-3 py-2 border border-white/10">
+        <div className="text-[11px] text-white/80 mb-1">Armor Set</div>
+        <select
+          className="text-[12px] bg-black/60 text-white rounded-lg px-2 py-1 border border-white/10"
+          value={armorSet}
+          onChange={(e) => setArmorSet(e.target.value)}
+        >
+          {ARMOR_SETS.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      </div>
+
+      <canvas ref={canvasRef} className="block touch-none" />
+    </div>
+  );
 };
 
 export default GameCanvas;
