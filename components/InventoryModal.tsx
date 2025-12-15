@@ -163,7 +163,7 @@ const InventoryModal: React.FC<InventoryModalProps> = ({
                 {/* Right Side: Active System Stack */}
                 <div className="flex-1 p-2 flex flex-col gap-2 justify-center overflow-hidden">
                     <h4 className="text-[8px] font-mono text-cyan-600 flex justify-between items-center shrink-0">
-                        <span>>> ACTIVE SYSTEM</span>
+                        <span>{">> "}ACTIVE SYSTEM</span>
                         <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse shadow-[0_0_5px_#22c55e]"></span>
                     </h4>
                     

@@ -54,8 +54,8 @@ const ShopModal: React.FC<ShopModalProps> = ({ onClose, onBuy, gold, inventory }
         <div className="absolute bottom-0 right-0 w-32 h-32 border-b-2 border-r-2 border-pink-500/50 pointer-events-none"></div>
 
         {/* Close Button */}
-        <button onClick={onClose} className="absolute top-0 right-0 p-4 text-cyan-500 hover:text-white z-20 hover:bg-cyan-900/20 transition-colors">
-          <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+        <button onClick={onClose} className="absolute top-0 right-0 p-2 text-cyan-500 hover:text-white z-20 hover:bg-cyan-900/20 transition-colors">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
 
         {/* Left: Item List (Marketplace) - Maximized (70%) */}
@@ -191,11 +191,11 @@ const ShopModal: React.FC<ShopModalProps> = ({ onClose, onBuy, gold, inventory }
                    {/* Lore Terminal */}
                    <div className="font-mono text-[10px] text-cyan-300/80 min-h-[50px] bg-slate-900/30 p-2 border border-slate-800/50 leading-tight">
                      {loadingLore ? (
-                         <span className="animate-pulse">>> ACCESSING..._</span>
+                         <span className="animate-pulse">{">> "}ACCESSING...</span>
                      ) : lore ? (
                          <span className="animate-in fade-in duration-500">{lore}</span>
                      ) : (
-                         <span className="opacity-40 text-[8px]">> ENCRYPTED.</span>
+                         <span className="opacity-40 text-[8px]">{">> "}ENCRYPTED.</span>
                      )}
                    </div>
                 </div>

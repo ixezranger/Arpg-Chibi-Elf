@@ -351,7 +351,7 @@ const App: React.FC = () => {
         skillCooldowns={skillCooldowns}
       />
       
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.6)_80%,rgba(0,0,0,1)_100%)]"></div>
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.1)_80%,rgba(0,0,0,0.8)_100%)]"></div>
 
       <UIOverlay 
         stats={playerStats}
